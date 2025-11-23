@@ -1,0 +1,22 @@
+{
+    "name": "abstract-game",
+    "version": "1.0.0",
+    "description": "A game on Abstract Chain",
+    "scripts": {
+        "test": "hardhat test",
+        "compile": "hardhat compile"
+    },
+    "devDependencies": {
+        "@matterlabs/hardhat-zksync": "^1.6.2",
+        "axios": "^1.6.0",
+        "dotenv": "^17.2.3",
+        "ethers": "^5.7.2",
+        "hardhat": "^2.22.0",
+        "ts-node": "^10.9.0",
+        "typescript": "^5.0.0",
+        "zksync-ethers": "^5.7.2"
+    },
+    "dependencies": {
+        "@matterlabs/hardhat-zksync-solc": "^1.5.1"
+    }
+}

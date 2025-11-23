@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Abstract Snake Xenzia</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Import Ethers.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js"></script>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>SNAKE XENZIA</h1>
+            <p class="subtitle">On Abstract Chain</p>
+        </header>
+
+        <div class="game-info">
+            <div class="score-board">
+                <span>Score: <span id="currentScore">0</span></span>
+                <span>Your High Score: <span id="userHighScore">0</span></span>
+                <span>Global Top: <span id="globalTopScore">0</span></span>
+            </div>
+            <button id="connectBtn" class="btn primary">Connect Wallet</button>
+        </div>
+
+        <div class="game-area">
+            <canvas id="gameCanvas" width="400" height="400"></canvas>
+            <div id="overlay" class="overlay">
+                <h2 id="overlayTitle">Ready?</h2>
+                <button id="startBtn" class="btn start-btn">START GAME</button>
+            </div>
+        </div>
+
+        <div class="controls-hint">
+            <p>Use Arrow Keys to Move</p>
+        </div>
+
+        <div id="statusMessage" class="status"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>

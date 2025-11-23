@@ -1,0 +1,335 @@
+import { useState, useEffect, useRef } from 'react';
+import { AbstractWalletProvider, useLoginWithAbstract, useCreateSession, useAbstractClient } from '@abstract-foundation/agw-react';
+import { toSessionClient } from '@abstract-foundation/agw-client/sessions';
+import { abstractTestnet } from 'viem/chains';
+import { useAccount, useBalance, useReadContract } from 'wagmi';
+import { parseAbi, toFunctionSelector, parseEther } from 'viem';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
+import { LimitType } from '@abstract-foundation/agw-client/sessions';
+
+// ---------- Constants ----------
+const GRID_SIZE = 20;
+const GAME_SPEED = 100;
+const CANVAS_SIZE = 400;
+const TILE_COUNT = CANVAS_SIZE / GRID_SIZE;
+
+// ---------- Contract Config ----------
+const CONTRACT_ADDRESS = "0xf185fDc10d0d64082A9318c794f172740ddDe18c";
+const PAYMASTER_ADDRESS = "0xDe2c18B657b3e22f4d014563eB2cF0E37BA84B10";
+
+const CONTRACT_ABI = parseAbi([
+    "function submitScore(uint256 _score) external",
+    "function getHighScore(address _player) external view returns (uint256)",
+    "function topScore() external view returns (address, uint256, uint256)",
+    "event NewHighScore(address indexed player, uint256 score)"
+]);
+
+function Game() {
+    // ----- Wallet Hooks -----
+    const { address, isConnected } = useAccount();
+    const { login, logout } = useLoginWithAbstract();
+    const { data: balanceData } = useBalance({ address });
+    const { createSessionAsync } = useCreateSession();
+    const { data: agwClient } = useAbstractClient();
+
+    // ----- Game state -----
+    const [score, setScore] = useState(0);
+    const [isGameRunning, setIsGameRunning] = useState(false);
+    const [gameOver, setGameOver] = useState(false);
+    const [statusMessage, setStatusMessage] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [sessionKey, setSessionKey] = useState(null);
+    const [hasSession, setHasSession] = useState(false);
+    const [copied, setCopied] = useState(false);
+
+    // ----- Refs -----
+    const canvasRef = useRef(null);
+    const snakeRef = useRef([{ x: 10, y: 10 }]);
+    const foodRef = useRef({ x: 15, y: 15 });
+    const directionRef = useRef({ x: 0, y: 0 });
+    const gameIntervalRef = useRef(null);
+
+    // ----- Contract Reads -----
+    const { data: userHighScore, refetch: refetchUserHigh } = useReadContract({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: 'getHighScore',
+        args: address ? [address] : undefined,
+        query: { enabled: !!address }
+    });
+
+    const { data: topScoreData, refetch: refetchTopScore } = useReadContract({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: 'topScore',
+    });
+
+    const globalTopScore = topScoreData ? Number(topScoreData[1]) : 0;
+    const displayUserHighScore = userHighScore ? Number(userHighScore) : 0;
+
+    // ----- Copy address to clipboard -----
+    const copyAddress = () => {
+        if (address) {
+            navigator.clipboard.writeText(address);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        }
+    };
+
+    // ----- Check for existing session on login -----
+    useEffect(() => {
+        if (isConnected) {
+            const stored = localStorage.getItem(`session_${address}`);
+            if (stored) {
+                try {
+                    const parsed = JSON.parse(stored);
+                    if (parsed.expiresAt > Math.floor(Date.now() / 1000)) {
+                        setSessionKey(parsed);
+                        setHasSession(true);
+                        setStatusMessage('Session active - automatic submissions enabled!');
+                    } else {
+                        localStorage.removeItem(`session_${address}`);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse session:', e);
+                }
+            }
+        }
+    }, [isConnected, address]);
+
+    // ----- Create Session -----
+    const createSession = async () => {
+        try {
+            setStatusMessage('Creating session key...');
+
+            const sessionPrivateKey = generatePrivateKey();
+            const sessionSigner = privateKeyToAccount(sessionPrivateKey);
+            const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7); // 7 days
+
+            const { session, transactionHash } = await createSessionAsync({
+                session: {
+                    signer: sessionSigner.address,
+                    expiresAt,
+                    feeLimit: {
+                        limitType: LimitType.Lifetime,
+                        limit: parseEther("0.1"),
+                        period: BigInt(0),
+                    },
+                    callPolicies: [{
+                        target: CONTRACT_ADDRESS,
+                        selector: toFunctionSelector("submitScore(uint256)"),
+                        valueLimit: {
+                            limitType: LimitType.Unlimited,
+                            limit: BigInt(0),
+                            period: BigInt(0),
+                        },
+                        maxValuePerUse: BigInt(0),
+                        constraints: [],
+                        directionRef.current = { x: 1, y: 0 };
+                        placeFood();
+        if(gameIntervalRef.current) clearInterval(gameIntervalRef.current);
+            gameIntervalRef.current = setInterval(gameLoop, GAME_SPEED);
+        };
+
+        const placeFood = () => {
+            let newFood;
+            let isOnSnake = true;
+            while (isOnSnake) {
+                newFood = {
+                    x: Math.floor(Math.random() * TILE_COUNT),
+                    y: Math.floor(Math.random() * TILE_COUNT)
+                };
+                isOnSnake = snakeRef.current.some(s => s.x === newFood.x && s.y === newFood.y);
+            }
+            foodRef.current = newFood;
+        };
+
+        const gameLoop = () => {
+            const head = {
+                x: snakeRef.current[0].x + directionRef.current.x,
+                y: snakeRef.current[0].y + directionRef.current.y
+            };
+            if (
+                head.x < 0 || head.x >= TILE_COUNT ||
+                head.y < 0 || head.y >= TILE_COUNT ||
+                snakeRef.current.some(s => s.x === head.x && s.y === head.y)
+            ) {
+                endGame();
+                return;
+            }
+            const newSnake = [head, ...snakeRef.current];
+            if (head.x === foodRef.current.x && head.y === foodRef.current.y) {
+                setScore(s => s + 10);
+                placeFood();
+            } else {
+                newSnake.pop();
+            }
+            snakeRef.current = newSnake;
+            draw();
+        };
+
+        const endGame = () => {
+            clearInterval(gameIntervalRef.current);
+            setIsGameRunning(false);
+            setGameOver(true);
+            if (isConnected && hasSession) {
+                submitScore(score);
+            }
+        };
+
+        // ----- Submit score (Automatic with Session Key) -----
+        const submitScore = async (finalScore) => {
+            if (!hasSession || isSubmitting || !agwClient) return;
+
+            setIsSubmitting(true);
+            setStatusMessage('Submitting score automatically...');
+
+            try {
+                const sessionSigner = privateKeyToAccount(sessionKey.privateKey);
+                const sessionClient = toSessionClient({
+                    client: agwClient,
+                    sessionAccount: sessionSigner,
+                });
+
+                const txHash = await sessionClient.writeContract({
+                    abi: CONTRACT_ABI,
+                    address: CONTRACT_ADDRESS,
+                    functionName: 'submitScore',
+                    args: [BigInt(finalScore)],
+                });
+
+                console.log(`Transaction sent: ${txHash}`);
+                setStatusMessage(`Score saved automatically! Tx: ${txHash.slice(0, 10)}...`);
+                refetchUserHigh();
+                refetchTopScore();
+            } catch (error) {
+                console.error('FULL ERROR:', error);
+                setStatusMessage(`Failed: ${error.message?.slice(0, 50) || 'Unknown error'}...`);
+            } finally {
+                setIsSubmitting(false);
+            }
+        };
+
+        // ----- Input handling -----
+        useEffect(() => {
+            const handleKey = e => {
+                if (!isGameRunning) return;
+                switch (e.key) {
+                    case 'ArrowUp':
+                        if (directionRef.current.y !== 1) directionRef.current = { x: 0, y: -1 };
+                        break;
+                    case 'ArrowDown':
+                        if (directionRef.current.y !== -1) directionRef.current = { x: 0, y: 1 };
+                        break;
+                    case 'ArrowLeft':
+                        if (directionRef.current.x !== 1) directionRef.current = { x: -1, y: 0 };
+                        break;
+                    case 'ArrowRight':
+                        if (directionRef.current.x !== -1) directionRef.current = { x: 1, y: 0 };
+                        break;
+                }
+            };
+            window.addEventListener('keydown', handleKey);
+            return () => window.removeEventListener('keydown', handleKey);
+        }, [isGameRunning]);
+
+        // ----- Canvas drawing -----
+        const draw = () => {
+            const ctx = canvasRef.current?.getContext('2d');
+            if (!ctx) return;
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+            snakeRef.current.forEach((seg, i) => {
+                ctx.fillStyle = i === 0 ? '#4ade80' : '#22c55e';
+                ctx.fillRect(seg.x * GRID_SIZE, seg.y * GRID_SIZE, GRID_SIZE - 2, GRID_SIZE - 2);
+            });
+            ctx.fillStyle = '#ef4444';
+            ctx.fillRect(foodRef.current.x * GRID_SIZE, foodRef.current.y * GRID_SIZE, GRID_SIZE - 2, GRID_SIZE - 2);
+        };
+
+        // ----- UI -----
+        return (
+            <div className="container">
+                <header>
+                    <h1>SNAKE XENZIA</h1>
+                    <p className="subtitle">On Abstract Global Wallet - Fully Gasless!</p>
+                </header>
+
+                <div className="game-info">
+                    <div className="score-board">
+                        <span>Score: <span>{score}</span></span>
+                        <span>Your High: <span>{displayUserHighScore}</span></span>
+                        <span>Global Top: <span>{globalTopScore}</span></span>
+                    </div>
+
+                    {!isConnected ? (
+                        <button onClick={login} className="btn primary">Login with AGW</button>
+                    ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
+                            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                                    <span
+                                        onClick={copyAddress}
+                                        style={{
+                                            color: '#4ade80',
+                                            fontSize: '14px',
+                                            cursor: 'pointer',
+                                            userSelect: 'none',
+                                            transition: 'color 0.2s',
+                                        }}
+                                        title="Click to copy full address"
+                                        onMouseEnter={(e) => e.currentTarget.style.color = '#22c55e'}
+                                        onMouseLeave={(e) => e.currentTarget.style.color = '#4ade80'}
+                                    >
+                                        {copied ? '✓ Copied!' : `${address?.slice(0, 6)}...${address?.slice(-4)}`}
+                                    </span>
+                                    <span style={{ color: '#22c55e', fontSize: '12px' }}>
+                                        {balanceData ? parseFloat(balanceData.formatted).toFixed(4) : '0'} ETH
+                                    </span>
+                                    {hasSession && (
+                                        <span style={{ color: '#fbbf24', fontSize: '11px' }}>
+                                            🔑 Auto-submit enabled
+                                        </span>
+                                    )}
+                                </div>
+                                {!hasSession && (
+                                    <button onClick={createSession} className="btn" style={{ padding: '8px 16px', fontSize: '14px', marginRight: '8px' }}>
+                                        Enable Auto-Submit
+                                    </button>
+                                )}
+                                <button onClick={logout} className="btn" style={{ padding: '8px 16px', fontSize: '14px' }}>Logout</button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                <div className="game-area">
+                    <canvas ref={canvasRef} width={CANVAS_SIZE} height={CANVAS_SIZE} />
+                    {(!isGameRunning || gameOver) && (
+                        <div className="overlay">
+                            <h2>{gameOver ? `Game Over! Score: ${score}` : 'Ready?'}</h2>
+                            <button onClick={startGame} className="btn start-btn">{gameOver ? 'PLAY AGAIN' : 'START GAME'}</button>
+                            {!hasSession && isConnected && (
+                                <p style={{ marginTop: '10px', fontSize: '14px', color: '#fbbf24' }}>
+                                    💡 Enable auto-submit for gasless score saving!
+                                </p>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                <div className="controls-hint"><p>Use Arrow Keys to Move</p></div>
+                <div className="status">
+                    {isSubmitting ? '⏳ Submitting Score...' : statusMessage}
+                </div>
+            </div>
+        );
+    }
+
+    export default function App() {
+        return (
+            <AbstractWalletProvider chain={abstractTestnet}>
+                <Game />
+            </AbstractWalletProvider>
+        );
+    }
