@@ -28,6 +28,7 @@ function Game() {
     const { createSessionAsync } = useCreateSession();
     const { data: agwClient } = useAbstractClient();
 
+    const [isDemoMode, setIsDemoMode] = useState(false);
     const [score, setScore] = useState(0);
     const [isGameRunning, setIsGameRunning] = useState(false);
     const [gameOver, setGameOver] = useState(false);
@@ -137,7 +138,20 @@ function Game() {
         }
     };
 
+    const startDemo = () => {
+        setIsDemoMode(true);
+        setScore(0);
+        setGameOver(false);
+        setIsGameRunning(true);
+        snakeRef.current = [{ x: 10, y: 10 }];
+        directionRef.current = { x: 1, y: 0 };
+        placeFood();
+        if (gameIntervalRef.current) clearInterval(gameIntervalRef.current);
+        gameIntervalRef.current = setInterval(gameLoop, GAME_SPEED);
+    };
+
     const startGame = () => {
+        setIsDemoMode(false);
         setScore(0);
         setGameOver(false);
         setIsGameRunning(true);
@@ -183,7 +197,7 @@ function Game() {
         clearInterval(gameIntervalRef.current);
         setIsGameRunning(false);
         setGameOver(true);
-        if (isConnected && hasSession) submitScore(score);
+        if (isConnected && hasSession && !isDemoMode) submitScore(score);
     };
 
     const submitScore = async (finalScore) => {
@@ -343,7 +357,7 @@ function Game() {
                                     {!isConnected ? (
                                         <div className="action-buttons">
                                             <button onClick={login} className="btn-action primary">Sign in to Play</button>
-                                            <button className="btn-action secondary">Play Demo</button>
+                                            <button onClick={startDemo} className="btn-action secondary">Play Demo</button>
                                         </div>
                                     ) : (
                                         <div className="action-buttons">
@@ -358,6 +372,11 @@ function Game() {
                                         </div>
                                     )}
                                     {hasSession && <div className="auto-badge">⚡ AUTO-SUBMIT ACTIVE</div>}
+                                    {isDemoMode && !isConnected && gameOver && (
+                                        <div style={{ marginTop: '1rem', color: '#666', fontSize: '0.8rem' }}>
+                                            Demo scores are not saved to the leaderboard.
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
