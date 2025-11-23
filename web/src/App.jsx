@@ -304,12 +304,8 @@ function Game() {
                         <span>Snake Party</span>
                     </div>
                     <div className="nav-item">
-                        <span className="icon">🎲</span>
-                        <span>Degen Dice</span>
-                    </div>
-                    <div className="nav-item">
-                        <span className="icon">🔥</span>
-                        <span>Laser Pit</span>
+                        <span className="icon">⚔️</span>
+                        <span>Multiplayer</span>
                     </div>
                 </nav>
             </aside>
