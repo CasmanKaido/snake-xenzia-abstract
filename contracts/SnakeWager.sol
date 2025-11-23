@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-
-contract SnakeWager is Ownable {
+contract SnakeWager {
     struct Game {
         address host;
         address challenger;
@@ -11,6 +9,10 @@ contract SnakeWager is Ownable {
         address winner;
         bool isActive;
         bool isFinished;
+        uint256 hostScore;
+        uint256 challengerScore;
+        bool hostSubmitted;
+        bool challengerSubmitted;
     }
 
     mapping(uint256 => Game) public games;
@@ -18,9 +20,8 @@ contract SnakeWager is Ownable {
 
     event GameCreated(uint256 indexed gameId, address indexed host, uint256 wagerAmount);
     event GameJoined(uint256 indexed gameId, address indexed challenger);
+    event ScoreSubmitted(uint256 indexed gameId, address indexed player, uint256 score);
     event GameFinished(uint256 indexed gameId, address indexed winner, uint256 payout);
-
-    constructor() Ownable(msg.sender) {}
 
     function createGame() external payable {
         require(msg.value > 0, "Wager must be greater than 0");
@@ -31,7 +32,11 @@ contract SnakeWager is Ownable {
             wagerAmount: msg.value,
             winner: address(0),
             isActive: true,
-            isFinished: false
+            isFinished: false,
+            hostScore: 0,
+            challengerScore: 0,
+            hostSubmitted: false,
+            challengerSubmitted: false
         });
 
         emit GameCreated(nextGameId, msg.sender, msg.value);
@@ -49,30 +54,61 @@ contract SnakeWager is Ownable {
         emit GameJoined(_gameId, msg.sender);
     }
 
-    // For this MVP, only the owner (server/admin) can declare the winner to prevent cheating
-    // In a real version, this would use ZK proofs or a commit-reveal scheme
-    function declareWinner(uint256 _gameId, address _winner) external onlyOwner {
+    function submitMatchScore(uint256 _gameId, uint256 _score) external {
         Game storage game = games[_gameId];
         require(game.isActive, "Game not active");
-        require(!game.isFinished, "Game already finished");
-        require(_winner == game.host || _winner == game.challenger, "Invalid winner");
+        require(!game.isFinished, "Game finished");
+        require(msg.sender == game.host || msg.sender == game.challenger, "Not a player");
 
+        if (msg.sender == game.host) {
+            require(!game.hostSubmitted, "Already submitted");
+            game.hostScore = _score;
+            game.hostSubmitted = true;
+        } else {
+            require(!game.challengerSubmitted, "Already submitted");
+            game.challengerScore = _score;
+            game.challengerSubmitted = true;
+        }
+
+        emit ScoreSubmitted(_gameId, msg.sender, _score);
+
+        // If both submitted, determine winner
+        if (game.hostSubmitted && game.challengerSubmitted) {
+            _finalizeGame(_gameId);
+        }
+    }
+
+    function _finalizeGame(uint256 _gameId) internal {
+        Game storage game = games[_gameId];
         game.isFinished = true;
         game.isActive = false;
-        game.winner = _winner;
 
         uint256 payout = address(this).balance >= game.wagerAmount * 2 ? game.wagerAmount * 2 : address(this).balance;
-        
-        (bool sent, ) = _winner.call{value: payout}("");
-        require(sent, "Failed to send payout");
 
-        emit GameFinished(_gameId, _winner, payout);
+        if (game.hostScore > game.challengerScore) {
+            game.winner = game.host;
+            (bool sent, ) = game.host.call{value: payout}("");
+            require(sent, "Payout failed");
+        } else if (game.challengerScore > game.hostScore) {
+            game.winner = game.challenger;
+            (bool sent, ) = game.challenger.call{value: payout}("");
+            require(sent, "Payout failed");
+        } else {
+            // Draw - refund both
+            game.winner = address(0);
+            uint256 refund = game.wagerAmount;
+            (bool sentHost, ) = game.host.call{value: refund}("");
+            (bool sentChallenger, ) = game.challenger.call{value: refund}("");
+            require(sentHost && sentChallenger, "Refund failed");
+        }
+
+        emit GameFinished(_gameId, game.winner, payout);
     }
     
     function getActiveGames() external view returns (Game[] memory, uint256[] memory) {
         uint256 activeCount = 0;
         for (uint256 i = 0; i < nextGameId; i++) {
-            if (games[i].isActive && games[i].challenger == address(0)) {
+            if (games[i].isActive) {
                 activeCount++;
             }
         }
@@ -81,7 +117,7 @@ contract SnakeWager is Ownable {
         uint256[] memory ids = new uint256[](activeCount);
         uint256 index = 0;
         for (uint256 i = 0; i < nextGameId; i++) {
-            if (games[i].isActive && games[i].challenger == address(0)) {
+            if (games[i].isActive) {
                 activeGames[index] = games[i];
                 ids[index] = i;
                 index++;

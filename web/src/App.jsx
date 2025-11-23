@@ -6,6 +6,7 @@ import { useAccount, useBalance, useReadContract, useWriteContract } from 'wagmi
 import { parseAbi, toFunctionSelector, parseEther, formatEther } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { LimitType } from '@abstract-foundation/agw-client/sessions';
+import { io } from 'socket.io-client';
 
 // ---------- Constants ----------
 const GRID_SIZE = 25;
@@ -13,7 +14,7 @@ const GAME_SPEED = 100;
 const CANVAS_SIZE = 500;
 const TILE_COUNT = CANVAS_SIZE / GRID_SIZE;
 const CONTRACT_ADDRESS = '0xf185fDc10d0d64082A9318c794f172740ddDe18c';
-const WAGER_CONTRACT_ADDRESS = '0xA0Aa87947647Cde59B76845C06A23658D1530420';
+const WAGER_CONTRACT_ADDRESS = '0x39A0e3dF4a31d6B1A63F798925bd0aB471EaCEc2';
 
 const CONTRACT_ABI = parseAbi([
     'function submitScore(uint256 _score) external',
@@ -25,9 +26,12 @@ const CONTRACT_ABI = parseAbi([
 const WAGER_ABI = parseAbi([
     'function createGame() external payable',
     'function joinGame(uint256 _gameId) external payable',
-    'function getActiveGames() external view returns ((address host, address challenger, uint256 wagerAmount, address winner, bool isActive, bool isFinished)[], uint256[])',
+    'function submitMatchScore(uint256 _gameId, uint256 _score) external',
+    'function getActiveGames() external view returns ((address host, address challenger, uint256 wagerAmount, address winner, bool isActive, bool isFinished, uint256 hostScore, uint256 challengerScore, bool hostSubmitted, bool challengerSubmitted)[], uint256[])',
     'event GameCreated(uint256 indexed gameId, address indexed host, uint256 wagerAmount)',
-    'event GameJoined(uint256 indexed gameId, address indexed challenger)'
+    'event GameJoined(uint256 indexed gameId, address indexed challenger)',
+    'event ScoreSubmitted(uint256 indexed gameId, address indexed player, uint256 score)',
+    'event GameFinished(uint256 indexed gameId, address indexed winner, uint256 payout)'
 ]);
 
 function Game() {
@@ -49,6 +53,12 @@ function Game() {
     const [sessionKey, setSessionKey] = useState(null);
     const [hasSession, setHasSession] = useState(false);
     const [copied, setCopied] = useState(false);
+
+    // Multiplayer State
+    const socketRef = useRef(null);
+    const [multiplayerState, setMultiplayerState] = useState(null);
+    const [isMultiplayer, setIsMultiplayer] = useState(false);
+    const [countdown, setCountdown] = useState(null);
 
     const canvasRef = useRef(null);
     const snakeRef = useRef([{ x: 10, y: 10 }]);
@@ -218,7 +228,11 @@ function Game() {
         clearInterval(gameIntervalRef.current);
         setIsGameRunning(false);
         setGameOver(true);
-        if (isConnected && hasSession && !isDemoMode) submitScore(score);
+        if (activeWagerId) {
+            submitMatchScore(score);
+        } else if (isConnected && hasSession && !isDemoMode) {
+            submitScore(score);
+        }
     };
 
     const submitScore = async (finalScore) => {
@@ -251,6 +265,8 @@ function Game() {
     };
 
     // ----- Wager Functions -----
+    const [activeWagerId, setActiveWagerId] = useState(null);
+
     const createWager = async () => {
         if (!isConnected || !wagerAmount) return;
         try {
@@ -282,7 +298,13 @@ function Game() {
                 value: amount,
             });
             console.log('Joined wager:', txHash);
-            setStatusMessage('Joined match! Good luck!');
+            setStatusMessage('Joined match! Connecting to server...');
+
+            // Start the game immediately for the joiner
+            setActiveWagerId(gameId);
+            setActiveTab('single'); // Switch to game view
+            connectToGame(gameId, false); // false = challenger
+
             refetchActiveGames();
         } catch (error) {
             console.error('Failed to join wager:', error);
@@ -290,19 +312,109 @@ function Game() {
         }
     };
 
+    const submitMatchScore = async (finalScore) => {
+        if (!activeWagerId) return;
+        setIsSubmitting(true);
+        setStatusMessage('Submitting match score...');
+        try {
+            const txHash = await writeContractAsync({
+                abi: WAGER_ABI,
+                address: WAGER_CONTRACT_ADDRESS,
+                functionName: 'submitMatchScore',
+                args: [BigInt(activeWagerId), BigInt(finalScore)],
+            });
+            console.log('Match score submitted:', txHash);
+            setStatusMessage(`Match Score Saved! ${txHash.slice(0, 10)}...`);
+            setActiveWagerId(null); // Reset active wager
+        } catch (error) {
+            console.error('Failed to submit match score:', error);
+            setStatusMessage('Failed to submit match score');
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
+    const connectToGame = (gameId, isHost) => {
+        if (socketRef.current) socketRef.current.disconnect();
+
+        const socket = io('http://localhost:3001');
+        socketRef.current = socket;
+
+        socket.emit('joinGame', { gameId: gameId.toString(), isHost });
+
+        socket.on('connect', () => {
+            console.log('Connected to game server');
+            setStatusMessage('Connected! Waiting for opponent...');
+        });
+
+
+        socket.on('gameOver', ({ winnerId, scores }) => {
+            setIsGameRunning(false);
+            setGameOver(true);
+
+            const myScore = scores[socket.id];
+            setScore(myScore); // Update local score for display
+
+            if (winnerId === socket.id) {
+                setStatusMessage('YOU WON! Submitting score...');
+                submitMatchScore(myScore);
+            } else if (winnerId === 'draw') {
+                setStatusMessage('DRAW! Refund initiated.');
+                // Both submit? Or just one? Contract handles draw if both submit.
+                submitMatchScore(myScore);
+            } else {
+                setStatusMessage('YOU LOST! Better luck next time.');
+                // Loser also submits to ensure game finalizes
+                submitMatchScore(myScore);
+            }
+        });
+
+        socket.on('playerDisconnected', () => {
+            setStatusMessage('Opponent disconnected. You win!');
+            // Handle win by default?
+        });
+    };
+
+    useEffect(() => {
+        if (isMultiplayer && multiplayerState) {
+            draw();
+        }
+    }, [multiplayerState, isMultiplayer]);
+
+    // Handle Input for Multiplayer
     useEffect(() => {
         const handleKey = e => {
             if (!isGameRunning) return;
+
+            let newDir = null;
             switch (e.key) {
-                case 'ArrowUp': if (directionRef.current.y !== 1) directionRef.current = { x: 0, y: -1 }; break;
-                case 'ArrowDown': if (directionRef.current.y !== -1) directionRef.current = { x: 0, y: 1 }; break;
-                case 'ArrowLeft': if (directionRef.current.x !== 1) directionRef.current = { x: -1, y: 0 }; break;
-                case 'ArrowRight': if (directionRef.current.x !== -1) directionRef.current = { x: 1, y: 0 }; break;
+                case 'ArrowUp': newDir = { x: 0, y: -1 }; break;
+                case 'ArrowDown': newDir = { x: 0, y: 1 }; break;
+                case 'ArrowLeft': newDir = { x: -1, y: 0 }; break;
+                case 'ArrowRight': newDir = { x: 1, y: 0 }; break;
+            }
+
+            if (newDir) {
+                if (isMultiplayer && socketRef.current && activeWagerId) {
+                    socketRef.current.emit('input', {
+                        gameId: activeWagerId.toString(),
+                        direction: newDir
+                    });
+                } else {
+                    // Local Game Logic
+                    if (newDir.x === 0 && directionRef.current.y !== 0 && newDir.y !== 0) return; // Prevent reverse
+                    // ... (existing logic handled in gameLoop)
+                    // Actually, existing logic updates directionRef directly
+                    if (e.key === 'ArrowUp' && directionRef.current.y !== 1) directionRef.current = { x: 0, y: -1 };
+                    if (e.key === 'ArrowDown' && directionRef.current.y !== -1) directionRef.current = { x: 0, y: 1 };
+                    if (e.key === 'ArrowLeft' && directionRef.current.x !== 1) directionRef.current = { x: -1, y: 0 };
+                    if (e.key === 'ArrowRight' && directionRef.current.x !== -1) directionRef.current = { x: 1, y: 0 };
+                }
             }
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-    }, [isGameRunning]);
+    }, [isGameRunning, isMultiplayer, activeWagerId]);
 
     const draw = () => {
         const ctx = canvasRef.current?.getContext('2d');
@@ -315,40 +427,78 @@ function Game() {
         ctx.lineWidth = 1;
         for (let i = 0; i <= CANVAS_SIZE; i += GRID_SIZE) {
             ctx.beginPath();
-            ctx.moveTo(i, 0);
-            ctx.lineTo(i, CANVAS_SIZE);
-            ctx.stroke();
-            ctx.beginPath();
             ctx.moveTo(0, i);
             ctx.lineTo(CANVAS_SIZE, i);
             ctx.stroke();
         }
 
-        snakeRef.current.forEach((seg, i) => {
-            ctx.fillStyle = i === 0 ? '#ccff00' : '#ffffff'; // Neon green head, white body
-            // Add glow effect
-            ctx.shadowColor = i === 0 ? '#ccff00' : 'rgba(255, 255, 255, 0.5)';
-            ctx.shadowBlur = i === 0 ? 15 : 0;
+        if (isMultiplayer && multiplayerState) {
+            // Draw Multiplayer State
 
+            // Draw Food
+            if (multiplayerState.food) {
+                ctx.fillStyle = '#ef4444';
+                ctx.beginPath();
+                const centerX = multiplayerState.food.x * GRID_SIZE + GRID_SIZE / 2;
+                const centerY = multiplayerState.food.y * GRID_SIZE + GRID_SIZE / 2;
+                const radius = (GRID_SIZE - 8) / 2;
+                ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.shadowColor = '#ef4444';
+                ctx.shadowBlur = 15;
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+
+            // Draw Players
+            Object.values(multiplayerState.players).forEach(player => {
+                if (!player.alive) return;
+
+                player.body.forEach((seg, i) => {
+                    ctx.fillStyle = i === 0 ? player.color : '#ffffff';
+                    ctx.shadowColor = i === 0 ? player.color : 'rgba(255, 255, 255, 0.5)';
+                    ctx.shadowBlur = i === 0 ? 15 : 0;
+
+                    ctx.beginPath();
+                    const centerX = seg.x * GRID_SIZE + GRID_SIZE / 2;
+                    const centerY = seg.y * GRID_SIZE + GRID_SIZE / 2;
+                    const radius = (GRID_SIZE - 4) / 2;
+
+                    ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                });
+            });
+
+        } else {
+            // Draw Local State
+            snakeRef.current.forEach((seg, i) => {
+                ctx.fillStyle = i === 0 ? '#ccff00' : '#ffffff';
+                ctx.shadowColor = i === 0 ? '#ccff00' : 'rgba(255, 255, 255, 0.5)';
+                ctx.shadowBlur = i === 0 ? 15 : 0;
+
+                ctx.beginPath();
+                const centerX = seg.x * GRID_SIZE + GRID_SIZE / 2;
+                const centerY = seg.y * GRID_SIZE + GRID_SIZE / 2;
+                const radius = (GRID_SIZE - 4) / 2;
+
+                ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            });
+
+            ctx.fillStyle = '#ef4444';
             ctx.beginPath();
-            // Draw circle for each segment
-            const centerX = seg.x * GRID_SIZE + GRID_SIZE / 2;
-            const centerY = seg.y * GRID_SIZE + GRID_SIZE / 2;
-            const radius = (GRID_SIZE - 4) / 2; // Slightly smaller for "bead" look
-
+            const centerX = foodRef.current.x * GRID_SIZE + GRID_SIZE / 2;
+            const centerY = foodRef.current.y * GRID_SIZE + GRID_SIZE / 2;
+            const radius = (GRID_SIZE - 8) / 2;
             ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
             ctx.fill();
-
-            // Reset shadow
+            ctx.shadowColor = '#ef4444';
+            ctx.shadowBlur = 15;
+            ctx.fill();
             ctx.shadowBlur = 0;
-        });
-
-        ctx.fillStyle = '#ef4444';
-        ctx.beginPath();
-        const foodX = foodRef.current.x * GRID_SIZE + GRID_SIZE / 2;
-        const foodY = foodRef.current.y * GRID_SIZE + GRID_SIZE / 2;
-        ctx.arc(foodX, foodY, (GRID_SIZE - 4) / 2, 0, 2 * Math.PI);
-        ctx.fill();
+        }
     };
 
     return (
@@ -405,7 +555,15 @@ function Game() {
                                 <canvas ref={canvasRef} width={CANVAS_SIZE} height={CANVAS_SIZE} className="game-canvas" />
 
                                 {/* Game Overlay */}
-                                {(!isGameRunning || gameOver) && (
+                                {countdown !== null && (
+                                    <div className="game-overlay" style={{ backgroundColor: 'rgba(0,0,0,0.8)', zIndex: 10 }}>
+                                        <div style={{ fontSize: '8rem', fontWeight: 'bold', color: '#ccff00', textShadow: '0 0 20px #ccff00' }}>
+                                            {countdown}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {((!isGameRunning || gameOver) && countdown === null) && (
                                     <div className="game-overlay">
                                         {gameOver && <h2 className="game-over-title">GAME OVER</h2>}
                                         <div className="score-display-large">
@@ -476,17 +634,41 @@ function Game() {
                                                     <div className="battle-info">
                                                         <span className="battle-host">Host: {game.host.slice(0, 6)}...{game.host.slice(-4)}</span>
                                                         <span className="battle-stake">💎 {formatEther(game.wagerAmount)} ETH</span>
+                                                        {game.challenger !== '0x0000000000000000000000000000000000000000' && (
+                                                            <span className="battle-vs">VS {game.challenger.slice(0, 6)}...</span>
+                                                        )}
                                                     </div>
-                                                    {game.host !== address && (
-                                                        <button
-                                                            onClick={() => joinWager(activeGamesData[1][index], game.wagerAmount)}
-                                                            className="btn-join"
-                                                        >
-                                                            JOIN MATCH
-                                                        </button>
-                                                    )}
-                                                    {game.host === address && (
-                                                        <span style={{ color: '#666', fontSize: '0.8rem' }}>WAITING...</span>
+
+                                                    {/* Action Buttons */}
+                                                    {game.host === address ? (
+                                                        // I am the host
+                                                        game.challenger !== '0x0000000000000000000000000000000000000000' ? (
+                                                            <button
+                                                                onClick={() => {
+                                                                    setActiveWagerId(activeGamesData[1][index]);
+                                                                    setActiveTab('single');
+                                                                    connectToGame(activeGamesData[1][index], true); // true = host
+                                                                }}
+                                                                className="btn-join"
+                                                                style={{ borderColor: '#ccff00', color: '#ccff00' }}
+                                                            >
+                                                                START MATCH
+                                                            </button>
+                                                        ) : (
+                                                            <span style={{ color: '#666', fontSize: '0.8rem' }}>WAITING FOR OPPONENT...</span>
+                                                        )
+                                                    ) : (
+                                                        // I am not the host
+                                                        game.challenger === '0x0000000000000000000000000000000000000000' ? (
+                                                            <button
+                                                                onClick={() => joinWager(activeGamesData[1][index], game.wagerAmount)}
+                                                                className="btn-join"
+                                                            >
+                                                                JOIN MATCH
+                                                            </button>
+                                                        ) : (
+                                                            <span style={{ color: '#ef4444', fontSize: '0.8rem' }}>MATCH IN PROGRESS</span>
+                                                        )
                                                     )}
                                                 </div>
                                             ))
@@ -552,7 +734,7 @@ function Game() {
 
                 </div>
             </div>
-        </div>
+        </div >
     );
 }
 
