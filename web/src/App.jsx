@@ -2,8 +2,8 @@
 import { AbstractWalletProvider, useLoginWithAbstract, useCreateSession, useAbstractClient } from '@abstract-foundation/agw-react';
 import { toSessionClient } from '@abstract-foundation/agw-client/sessions';
 import { abstractTestnet } from 'viem/chains';
-import { useAccount, useBalance, useReadContract } from 'wagmi';
-import { parseAbi, toFunctionSelector, parseEther } from 'viem';
+import { useAccount, useBalance, useReadContract, useWriteContract } from 'wagmi';
+import { parseAbi, toFunctionSelector, parseEther, formatEther } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { LimitType } from '@abstract-foundation/agw-client/sessions';
 
@@ -13,6 +13,7 @@ const GAME_SPEED = 100;
 const CANVAS_SIZE = 500;
 const TILE_COUNT = CANVAS_SIZE / GRID_SIZE;
 const CONTRACT_ADDRESS = '0xf185fDc10d0d64082A9318c794f172740ddDe18c';
+const WAGER_CONTRACT_ADDRESS = '0xA0Aa87947647Cde59B76845C06A23658D1530420';
 
 const CONTRACT_ABI = parseAbi([
     'function submitScore(uint256 _score) external',
@@ -21,13 +22,24 @@ const CONTRACT_ABI = parseAbi([
     'event NewHighScore(address indexed player, uint256 score)'
 ]);
 
+const WAGER_ABI = parseAbi([
+    'function createGame() external payable',
+    'function joinGame(uint256 _gameId) external payable',
+    'function getActiveGames() external view returns ((address host, address challenger, uint256 wagerAmount, address winner, bool isActive, bool isFinished)[], uint256[])',
+    'event GameCreated(uint256 indexed gameId, address indexed host, uint256 wagerAmount)',
+    'event GameJoined(uint256 indexed gameId, address indexed challenger)'
+]);
+
 function Game() {
     const { address, isConnected } = useAccount();
     const { login, logout } = useLoginWithAbstract();
     const { data: balanceData } = useBalance({ address });
     const { createSessionAsync } = useCreateSession();
     const { data: agwClient } = useAbstractClient();
+    const { writeContractAsync } = useWriteContract();
 
+    const [activeTab, setActiveTab] = useState('single'); // 'single' or 'multi'
+    const [wagerAmount, setWagerAmount] = useState('0.001');
     const [isDemoMode, setIsDemoMode] = useState(false);
     const [score, setScore] = useState(0);
     const [isGameRunning, setIsGameRunning] = useState(false);
@@ -56,6 +68,15 @@ function Game() {
         address: CONTRACT_ADDRESS,
         abi: CONTRACT_ABI,
         functionName: 'topScore',
+    });
+
+    const { data: activeGamesData, refetch: refetchActiveGames } = useReadContract({
+        address: WAGER_CONTRACT_ADDRESS,
+        abi: WAGER_ABI,
+        functionName: 'getActiveGames',
+        query: {
+            refetchInterval: 5000 // Poll every 5 seconds
+        }
     });
 
     const globalTopScore = topScoreData ? Number(topScoreData[1]) : 0;
@@ -229,6 +250,46 @@ function Game() {
         }
     };
 
+    // ----- Wager Functions -----
+    const createWager = async () => {
+        if (!isConnected || !wagerAmount) return;
+        try {
+            setStatusMessage('Creating wager...');
+            const txHash = await writeContractAsync({
+                abi: WAGER_ABI,
+                address: WAGER_CONTRACT_ADDRESS,
+                functionName: 'createGame',
+                value: parseEther(wagerAmount),
+            });
+            console.log('Wager created:', txHash);
+            setStatusMessage('Wager created! Waiting for opponent...');
+            refetchActiveGames();
+        } catch (error) {
+            console.error('Failed to create wager:', error);
+            setStatusMessage('Failed to create wager');
+        }
+    };
+
+    const joinWager = async (gameId, amount) => {
+        if (!isConnected) return;
+        try {
+            setStatusMessage('Joining wager...');
+            const txHash = await writeContractAsync({
+                abi: WAGER_ABI,
+                address: WAGER_CONTRACT_ADDRESS,
+                functionName: 'joinGame',
+                args: [BigInt(gameId)],
+                value: amount,
+            });
+            console.log('Joined wager:', txHash);
+            setStatusMessage('Joined match! Good luck!');
+            refetchActiveGames();
+        } catch (error) {
+            console.error('Failed to join wager:', error);
+            setStatusMessage('Failed to join wager');
+        }
+    };
+
     useEffect(() => {
         const handleKey = e => {
             if (!isGameRunning) return;
@@ -299,11 +360,11 @@ function Game() {
                     <span className="logo-text">SNAKE XENZIA</span>
                 </div>
                 <nav className="nav-menu">
-                    <div className="nav-item active">
+                    <div className={`nav-item ${activeTab === 'single' ? 'active' : ''}`} onClick={() => setActiveTab('single')}>
                         <span className="icon">🎮</span>
                         <span>Snake Party</span>
                     </div>
-                    <div className="nav-item">
+                    <div className={`nav-item ${activeTab === 'multi' ? 'active' : ''}`} onClick={() => setActiveTab('multi')}>
                         <span className="icon">⚔️</span>
                         <span>Multiplayer</span>
                     </div>
@@ -337,51 +398,108 @@ function Game() {
                 {/* Content Area */}
                 <div className="content-area">
 
-                    {/* Game Section */}
-                    <div className="game-section">
-                        <div className="game-container">
-                            <canvas ref={canvasRef} width={CANVAS_SIZE} height={CANVAS_SIZE} className="game-canvas" />
+                    {activeTab === 'single' ? (
+                        /* Single Player Game Section */
+                        <div className="game-section">
+                            <div className="game-container">
+                                <canvas ref={canvasRef} width={CANVAS_SIZE} height={CANVAS_SIZE} className="game-canvas" />
 
-                            {/* Game Overlay */}
-                            {(!isGameRunning || gameOver) && (
-                                <div className="game-overlay">
-                                    {gameOver && <h2 className="game-over-title">GAME OVER</h2>}
-                                    <div className="score-display-large">
-                                        SCORE: {score}
-                                    </div>
-
-                                    {!isConnected ? (
-                                        <div className="action-buttons">
-                                            <button onClick={login} className="btn-action primary">Sign in to Play</button>
-                                            <button onClick={startDemo} className="btn-action secondary">Play Demo</button>
+                                {/* Game Overlay */}
+                                {(!isGameRunning || gameOver) && (
+                                    <div className="game-overlay">
+                                        {gameOver && <h2 className="game-over-title">GAME OVER</h2>}
+                                        <div className="score-display-large">
+                                            SCORE: {score}
                                         </div>
-                                    ) : (
-                                        <div className="action-buttons">
-                                            <button onClick={startGame} className="btn-action primary">
-                                                {gameOver ? 'TRY AGAIN' : 'START GAME'}
-                                            </button>
-                                            {!hasSession && (
-                                                <button onClick={createSession} className="btn-action secondary">
-                                                    Enable Auto-Submit
+
+                                        {!isConnected ? (
+                                            <div className="action-buttons">
+                                                <button onClick={login} className="btn-action primary">Sign in to Play</button>
+                                                <button onClick={startDemo} className="btn-action secondary">Play Demo</button>
+                                            </div>
+                                        ) : (
+                                            <div className="action-buttons">
+                                                <button onClick={startGame} className="btn-action primary">
+                                                    {gameOver ? 'TRY AGAIN' : 'START GAME'}
                                                 </button>
-                                            )}
-                                        </div>
-                                    )}
-                                    {hasSession && <div className="auto-badge">⚡ AUTO-SUBMIT ACTIVE</div>}
-                                    {isDemoMode && !isConnected && gameOver && (
-                                        <div style={{ marginTop: '1rem', color: '#666', fontSize: '0.8rem' }}>
-                                            Demo scores are not saved to the leaderboard.
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                        </div>
+                                                {!hasSession && (
+                                                    <button onClick={createSession} className="btn-action secondary">
+                                                        Enable Auto-Submit
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )}
+                                        {hasSession && <div className="auto-badge">⚡ AUTO-SUBMIT ACTIVE</div>}
+                                        {isDemoMode && !isConnected && gameOver && (
+                                            <div style={{ marginTop: '1rem', color: '#666', fontSize: '0.8rem' }}>
+                                                Demo scores are not saved to the leaderboard.
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
 
-                        <div className="game-status-bar">
-                            <div className="status-text">{isSubmitting ? 'SAVING SCORE...' : statusMessage}</div>
-                            <div className="controls-hint">USE ARROW KEYS TO MOVE</div>
+                            <div className="game-status-bar">
+                                <div className="status-text">{isSubmitting ? 'SAVING SCORE...' : statusMessage}</div>
+                                <div className="controls-hint">USE ARROW KEYS TO MOVE</div>
+                            </div>
                         </div>
-                    </div>
+                    ) : (
+                        /* Multiplayer Section */
+                        <div className="game-section">
+                            <div className="multiplayer-container">
+                                <h2 className="section-title">⚔️ WAGER ARENA</h2>
+
+                                <div className="create-wager-card">
+                                    <h3>CREATE MATCH</h3>
+                                    <div className="wager-input-group">
+                                        <label>WAGER AMOUNT (ETH)</label>
+                                        <input
+                                            type="number"
+                                            value={wagerAmount}
+                                            onChange={(e) => setWagerAmount(e.target.value)}
+                                            step="0.001"
+                                            className="wager-input"
+                                        />
+                                    </div>
+                                    <button onClick={createWager} className="btn-action primary full-width">
+                                        CREATE & STAKE {wagerAmount} ETH
+                                    </button>
+                                </div>
+
+                                <div className="live-battles">
+                                    <h3>LIVE BATTLES</h3>
+                                    <div className="battle-list">
+                                        {activeGamesData && activeGamesData[0] && activeGamesData[0].length > 0 ? (
+                                            activeGamesData[0].map((game, index) => (
+                                                <div className="battle-row" key={activeGamesData[1][index].toString()}>
+                                                    <div className="battle-info">
+                                                        <span className="battle-host">Host: {game.host.slice(0, 6)}...{game.host.slice(-4)}</span>
+                                                        <span className="battle-stake">💎 {formatEther(game.wagerAmount)} ETH</span>
+                                                    </div>
+                                                    {game.host !== address && (
+                                                        <button
+                                                            onClick={() => joinWager(activeGamesData[1][index], game.wagerAmount)}
+                                                            className="btn-join"
+                                                        >
+                                                            JOIN MATCH
+                                                        </button>
+                                                    )}
+                                                    {game.host === address && (
+                                                        <span style={{ color: '#666', fontSize: '0.8rem' }}>WAITING...</span>
+                                                    )}
+                                                </div>
+                                            ))
+                                        ) : (
+                                            <div style={{ color: '#666', textAlign: 'center', padding: '1rem' }}>
+                                                No active battles. Create one!
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Leaderboard Section */}
                     <aside className="leaderboard-section">
