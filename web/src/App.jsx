@@ -347,10 +347,30 @@ function Game() {
             setStatusMessage('Connected! Waiting for opponent...');
         });
 
+        socket.on('waitingForOpponent', () => {
+            setStatusMessage('Waiting for opponent to join...');
+        });
+
+        socket.on('countdown', ({ count }) => {
+            setCountdown(count);
+            setStatusMessage(`Starting in ${count}...`);
+        });
+
+        socket.on('gameStart', ({ message }) => {
+            setCountdown(null);
+            setIsGameRunning(true);
+            setStatusMessage('GO!');
+            setIsMultiplayer(true); // Ensure we render multiplayer state
+        });
+
+        socket.on('gameState', (state) => {
+            setMultiplayerState(state);
+        });
 
         socket.on('gameOver', ({ winnerId, scores }) => {
             setIsGameRunning(false);
             setGameOver(true);
+            setCountdown(null); // Ensure countdown is cleared
 
             const myScore = scores[socket.id];
             setScore(myScore); // Update local score for display
@@ -371,6 +391,8 @@ function Game() {
 
         socket.on('playerDisconnected', () => {
             setStatusMessage('Opponent disconnected. You win!');
+            setIsGameRunning(false);
+            setGameOver(true);
             // Handle win by default?
         });
     };
@@ -518,6 +540,10 @@ function Game() {
                         <span className="icon">⚔️</span>
                         <span>Multiplayer</span>
                     </div>
+                    <div className={`nav-item ${activeTab === 'tournament' ? 'active' : ''}`} onClick={() => setActiveTab('tournament')}>
+                        <span className="icon">🏆</span>
+                        <span>Tournament</span>
+                    </div>
                 </nav>
             </aside>
 
@@ -603,81 +629,18 @@ function Game() {
                             </div>
                         </div>
                     ) : (
-                        /* Multiplayer Section */
+                        /* Coming Soon Section for Multiplayer & Tournament */
                         <div className="game-section">
-                            <div className="multiplayer-container">
-                                <h2 className="section-title">⚔️ WAGER ARENA</h2>
-
-                                <div className="create-wager-card">
-                                    <h3>CREATE MATCH</h3>
-                                    <div className="wager-input-group">
-                                        <label>WAGER AMOUNT (ETH)</label>
-                                        <input
-                                            type="number"
-                                            value={wagerAmount}
-                                            onChange={(e) => setWagerAmount(e.target.value)}
-                                            step="0.001"
-                                            className="wager-input"
-                                        />
-                                    </div>
-                                    <button onClick={createWager} className="btn-action primary full-width">
-                                        CREATE & STAKE {wagerAmount} ETH
-                                    </button>
-                                </div>
-
-                                <div className="live-battles">
-                                    <h3>LIVE BATTLES</h3>
-                                    <div className="battle-list">
-                                        {activeGamesData && activeGamesData[0] && activeGamesData[0].length > 0 ? (
-                                            activeGamesData[0].map((game, index) => (
-                                                <div className="battle-row" key={activeGamesData[1][index].toString()}>
-                                                    <div className="battle-info">
-                                                        <span className="battle-host">Host: {game.host.slice(0, 6)}...{game.host.slice(-4)}</span>
-                                                        <span className="battle-stake">💎 {formatEther(game.wagerAmount)} ETH</span>
-                                                        {game.challenger !== '0x0000000000000000000000000000000000000000' && (
-                                                            <span className="battle-vs">VS {game.challenger.slice(0, 6)}...</span>
-                                                        )}
-                                                    </div>
-
-                                                    {/* Action Buttons */}
-                                                    {game.host === address ? (
-                                                        // I am the host
-                                                        game.challenger !== '0x0000000000000000000000000000000000000000' ? (
-                                                            <button
-                                                                onClick={() => {
-                                                                    setActiveWagerId(activeGamesData[1][index]);
-                                                                    setActiveTab('single');
-                                                                    connectToGame(activeGamesData[1][index], true); // true = host
-                                                                }}
-                                                                className="btn-join"
-                                                                style={{ borderColor: '#ccff00', color: '#ccff00' }}
-                                                            >
-                                                                START MATCH
-                                                            </button>
-                                                        ) : (
-                                                            <span style={{ color: '#666', fontSize: '0.8rem' }}>WAITING FOR OPPONENT...</span>
-                                                        )
-                                                    ) : (
-                                                        // I am not the host
-                                                        game.challenger === '0x0000000000000000000000000000000000000000' ? (
-                                                            <button
-                                                                onClick={() => joinWager(activeGamesData[1][index], game.wagerAmount)}
-                                                                className="btn-join"
-                                                            >
-                                                                JOIN MATCH
-                                                            </button>
-                                                        ) : (
-                                                            <span style={{ color: '#ef4444', fontSize: '0.8rem' }}>MATCH IN PROGRESS</span>
-                                                        )
-                                                    )}
-                                                </div>
-                                            ))
-                                        ) : (
-                                            <div style={{ color: '#666', textAlign: 'center', padding: '1rem' }}>
-                                                No active battles. Create one!
-                                            </div>
-                                        )}
-                                    </div>
+                            <div className="coming-soon-container">
+                                <div className="coming-soon-card">
+                                    <span className="cs-icon">{activeTab === 'multi' ? '⚔️' : '🏆'}</span>
+                                    <h2>{activeTab === 'multi' ? 'MULTIPLAYER ARENA' : 'TOURNAMENT'}</h2>
+                                    <p>
+                                        {activeTab === 'multi'
+                                            ? 'Real-time battles with ETH wagers are coming soon.'
+                                            : 'Daily high-score tournaments with massive prize pools.'}
+                                    </p>
+                                    <div className="cs-badge">COMING SOON</div>
                                 </div>
                             </div>
                         </div>
