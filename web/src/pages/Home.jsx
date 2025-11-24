@@ -9,7 +9,9 @@ import { io } from 'socket.io-client';
 
 // ---------- Constants ----------
 const GRID_SIZE = 25;
-const GAME_SPEED = 100;
+const INITIAL_GAME_SPEED = 150; // Start slower (was 100ms)
+const MIN_GAME_SPEED = 60; // Fastest possible speed
+const SPEED_INCREASE_INTERVAL = 50; // Increase speed every 50 points
 const CANVAS_SIZE = 500;
 const TILE_COUNT = CANVAS_SIZE / GRID_SIZE;
 const CONTRACT_ADDRESS = '0xf185fDc10d0d64082A9318c794f172740ddDe18c';
@@ -43,6 +45,7 @@ const Home = () => {
     const [wagerAmount, setWagerAmount] = useState('0.001');
     const [isDemoMode, setIsDemoMode] = useState(false);
     const [score, setScore] = useState(0);
+    const [currentSpeed, setCurrentSpeed] = useState(INITIAL_GAME_SPEED);
     const [isGameRunning, setIsGameRunning] = useState(false);
     const [gameOver, setGameOver] = useState(false);
     const [statusMessage, setStatusMessage] = useState('');
@@ -63,18 +66,31 @@ const Home = () => {
     const directionRef = useRef({ x: 0, y: 0 });
     const gameIntervalRef = useRef(null);
 
+    // Calculate game speed based on score
+    const calculateGameSpeed = (currentScore) => {
+        const speedDecrease = Math.floor(currentScore / SPEED_INCREASE_INTERVAL) * 10;
+        const newSpeed = Math.max(MIN_GAME_SPEED, INITIAL_GAME_SPEED - speedDecrease);
+        return newSpeed;
+    };
+
     const { data: userHighScore, refetch: refetchUserHigh } = useReadContract({
         address: CONTRACT_ADDRESS,
         abi: CONTRACT_ABI,
         functionName: 'getHighScore',
         args: address ? [address] : undefined,
-        query: { enabled: !!address }
+        query: {
+            enabled: !!address,
+            refetchInterval: 2000 // Poll every 2 seconds for faster updates
+        }
     });
 
     const { data: topScoreData, refetch: refetchTopScore } = useReadContract({
         address: CONTRACT_ADDRESS,
         abi: CONTRACT_ABI,
         functionName: 'topScore',
+        query: {
+            refetchInterval: 2000 // Poll every 2 seconds for faster updates
+        }
     });
 
     const { data: activeGamesData, refetch: refetchActiveGames } = useReadContract({
@@ -161,26 +177,43 @@ const Home = () => {
     const startDemo = () => {
         setIsDemoMode(true);
         setScore(0);
+        setCurrentSpeed(INITIAL_GAME_SPEED);
         setGameOver(false);
         setIsGameRunning(true);
         snakeRef.current = [{ x: 10, y: 10 }];
         directionRef.current = { x: 1, y: 0 };
         placeFood();
         if (gameIntervalRef.current) clearInterval(gameIntervalRef.current);
-        gameIntervalRef.current = setInterval(gameLoop, GAME_SPEED);
+        gameIntervalRef.current = setInterval(gameLoop, INITIAL_GAME_SPEED);
     };
 
     const startGame = () => {
         setIsDemoMode(false);
         setScore(0);
+        setCurrentSpeed(INITIAL_GAME_SPEED);
         setGameOver(false);
         setIsGameRunning(true);
         snakeRef.current = [{ x: 10, y: 10 }];
         directionRef.current = { x: 1, y: 0 };
         placeFood();
         if (gameIntervalRef.current) clearInterval(gameIntervalRef.current);
-        gameIntervalRef.current = setInterval(gameLoop, GAME_SPEED);
+        gameIntervalRef.current = setInterval(gameLoop, INITIAL_GAME_SPEED);
     };
+
+    // Dynamic speed adjustment based on score
+    useEffect(() => {
+        if (!isGameRunning || isMultiplayer) return; // Don't adjust speed in multiplayer
+
+        const newSpeed = calculateGameSpeed(score);
+        if (newSpeed !== currentSpeed) {
+            setCurrentSpeed(newSpeed);
+            // Restart interval with new speed
+            if (gameIntervalRef.current) {
+                clearInterval(gameIntervalRef.current);
+                gameIntervalRef.current = setInterval(gameLoop, newSpeed);
+            }
+        }
+    }, [score, isGameRunning, isMultiplayer]);
 
     const placeFood = () => {
         let newFood;
@@ -565,7 +598,9 @@ const Home = () => {
 
                 <div className="game-status-bar">
                     <div className="status-text">{isSubmitting ? 'SAVING SCORE...' : statusMessage}</div>
-                    <div className="controls-hint">USE ARROW KEYS TO MOVE</div>
+                    <div className="controls-hint">
+                        SPEED: {Math.round((INITIAL_GAME_SPEED - currentSpeed) / 10)}x | USE ARROW KEYS
+                    </div>
                 </div>
             </div>
 
