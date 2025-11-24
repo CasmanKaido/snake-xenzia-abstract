@@ -47,6 +47,7 @@ const Home = () => {
     const [score, setScore] = useState(0);
     const [currentSpeed, setCurrentSpeed] = useState(INITIAL_GAME_SPEED);
     const [isGameRunning, setIsGameRunning] = useState(false);
+    const [isPaused, setIsPaused] = useState(false);
     const [gameOver, setGameOver] = useState(false);
     const [statusMessage, setStatusMessage] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -65,6 +66,7 @@ const Home = () => {
     const foodRef = useRef({ x: 15, y: 15 });
     const directionRef = useRef({ x: 0, y: 0 });
     const gameIntervalRef = useRef(null);
+    const scoreRef = useRef(0); // Track real-time score to avoid state race conditions
 
     // Calculate game speed based on score
     const calculateGameSpeed = (currentScore) => {
@@ -177,6 +179,7 @@ const Home = () => {
     const startDemo = () => {
         setIsDemoMode(true);
         setScore(0);
+        scoreRef.current = 0;
         setCurrentSpeed(INITIAL_GAME_SPEED);
         setGameOver(false);
         setIsGameRunning(true);
@@ -190,6 +193,7 @@ const Home = () => {
     const startGame = () => {
         setIsDemoMode(false);
         setScore(0);
+        scoreRef.current = 0;
         setCurrentSpeed(INITIAL_GAME_SPEED);
         setGameOver(false);
         setIsGameRunning(true);
@@ -237,7 +241,8 @@ const Home = () => {
         }
         const newSnake = [head, ...snakeRef.current];
         if (head.x === foodRef.current.x && head.y === foodRef.current.y) {
-            setScore(s => s + 10);
+            scoreRef.current += 10; // Update ref immediately
+            setScore(s => s + 10); // Update state for UI
             placeFood();
         } else {
             newSnake.pop();
@@ -250,10 +255,26 @@ const Home = () => {
         clearInterval(gameIntervalRef.current);
         setIsGameRunning(false);
         setGameOver(true);
+        setIsPaused(false); // Reset pause state
+        const finalScore = scoreRef.current; // Use ref for accurate score
         if (activeWagerId) {
-            submitMatchScore(score);
+            submitMatchScore(finalScore);
         } else if (isConnected && hasSession && !isDemoMode) {
-            submitScore(score);
+            submitScore(finalScore);
+        }
+    };
+
+    const togglePause = () => {
+        if (!isGameRunning || gameOver) return;
+
+        if (isPaused) {
+            // Resume game
+            setIsPaused(false);
+            gameIntervalRef.current = setInterval(gameLoop, currentSpeed);
+        } else {
+            // Pause game
+            setIsPaused(true);
+            clearInterval(gameIntervalRef.current);
         }
     };
 
@@ -424,10 +445,17 @@ const Home = () => {
         }
     }, [multiplayerState, isMultiplayer]);
 
-    // Handle Input for Multiplayer
+    // Handle Input for Multiplayer and Pause
     useEffect(() => {
         const handleKey = e => {
-            if (!isGameRunning) return;
+            // Spacebar to pause/resume
+            if (e.key === ' ' || e.code === 'Space') {
+                e.preventDefault(); // Prevent page scroll
+                togglePause();
+                return;
+            }
+
+            if (!isGameRunning || isPaused) return; // Don't process arrow keys if paused
 
             let newDir = null;
             switch (e.key) {
@@ -457,7 +485,7 @@ const Home = () => {
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-    }, [isGameRunning, isMultiplayer, activeWagerId]);
+    }, [isGameRunning, isPaused, isMultiplayer, activeWagerId]);
 
     const draw = () => {
         const ctx = canvasRef.current?.getContext('2d');
@@ -551,7 +579,24 @@ const Home = () => {
         <>
             <div className="game-section">
                 <div className="game-container">
-                    <canvas ref={canvasRef} width={CANVAS_SIZE} height={CANVAS_SIZE} className="game-canvas" />
+                    <canvas
+                        ref={canvasRef}
+                        width={CANVAS_SIZE}
+                        height={CANVAS_SIZE}
+                        className="game-canvas"
+                        onClick={togglePause}
+                        style={{ cursor: isGameRunning && !gameOver ? 'pointer' : 'default' }}
+                    />
+
+                    {/* Pause Overlay */}
+                    {isPaused && (
+                        <div className="game-overlay" style={{ backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 15 }}>
+                            <h2 style={{ fontSize: '3rem', color: '#ccff00', margin: 0, letterSpacing: '4px' }}>PAUSED</h2>
+                            <div style={{ fontSize: '1.2rem', color: 'var(--text-gray)', marginTop: '1rem' }}>
+                                Press SPACE or TAP to resume
+                            </div>
+                        </div>
+                    )}
 
                     {/* Game Overlay */}
                     {countdown !== null && (
@@ -599,7 +644,7 @@ const Home = () => {
                 <div className="game-status-bar">
                     <div className="status-text">{isSubmitting ? 'SAVING SCORE...' : statusMessage}</div>
                     <div className="controls-hint">
-                        SPEED: {Math.round((INITIAL_GAME_SPEED - currentSpeed) / 10)}x | USE ARROW KEYS
+                        SPEED: {Math.round((INITIAL_GAME_SPEED - currentSpeed) / 10)}x | ARROWS to move | SPACE to pause
                     </div>
                 </div>
             </div>
