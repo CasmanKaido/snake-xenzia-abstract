@@ -9,8 +9,8 @@ import { io } from 'socket.io-client';
 
 // ---------- Constants ----------
 const GRID_SIZE = 25;
-const INITIAL_GAME_SPEED = 150; // Start slower (was 100ms)
-const MIN_GAME_SPEED = 60; // Fastest possible speed
+const INITIAL_GAME_SPEED = 200; // Start very slow (was 150ms)
+const MIN_GAME_SPEED = 70; // Fastest possible speed
 const SPEED_INCREASE_INTERVAL = 50; // Increase speed every 50 points
 const CANVAS_SIZE = 500;
 const TILE_COUNT = CANVAS_SIZE / GRID_SIZE;
